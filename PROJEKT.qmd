@@ -1,0 +1,673 @@
+---
+title: "Analiza czynników wpływających na skuteczność rzutów karnych na podstawie danych z 5 czołowych lig Europy (2019/2020)"
+author: "Antoni Kostek"
+lang: "pl"
+format:
+  html:
+    theme: simplex
+    toc: true
+    toc-depth: 3
+    number-sections: true
+    echo: false      
+    warning: false   
+    message: false   
+---
+
+# Wstęp
+
+Celem projektu jest analiza czynników determinujących skuteczność rzutów karnych w piłce nożnej. Badamy wpływ presji psychicznej, narastającego zmęczenia oraz cech biologicznych (wiek, wzrost, noga dominująca), aby zdefiniować profil optymalnego wykonawcy i sprawdzić, które elementy gry mają realne przełożenie na wynik.
+
+```{r}
+library(tidyverse)
+library(readxl)
+library(knitr)
+library(kableExtra)
+library(scales)
+library(ggthemes)
+
+
+sciezka <- "Dane_Final_wszystko.xlsx"
+dane <- read_excel(sciezka)
+
+
+dane_clean <- dane %>%
+  mutate(
+    Taker_Foot = str_to_title(trimws(Taker_Foot)),
+    Scored = as.numeric(Scored),
+    
+    Miejsce_Global = if_else(`Team taking pen` == `Home team`, "Dom", "Wyjazd")
+  )
+
+
+n_obs <- nrow(dane_clean) 
+#dodaj skutecznosc i tam pozniej o xg cos tam pogadac
+g_s <- mean(dane_clean$Scored, na.rm = TRUE)
+g_s1 <- scales::percent(g_s, accuracy = 0.01)
+
+
+```
+
+::: callout-note
+**Liczba analizowanych rzutów karnych:** `r n_obs`
+
+**Skuteczność analizowanych karnych:** `r g_s1`
+:::
+
+# Hipoteza 1: Wiek strzelca.
+
+Starsi (bardziej doświadczeni) strzelcy mają lepszą skuteczność przy wykonywaniu rzutu karnego.
+
+### A. Analiza w grupach wiekowych
+
+```{r}
+
+
+# 1. Przygotowanie grup wiekowych (kwartyle)
+wiek_stats <- dane_clean %>%
+  filter(!is.na(Taker_Age), !is.na(Scored)) %>%
+  mutate(Grupa = ntile(Taker_Age, 4)) %>%
+  group_by(Grupa) %>%
+  mutate(
+    Przedzial = paste0(min(Taker_Age), "-", max(Taker_Age), " lat"),
+    Sort_Val = min(Taker_Age)
+  ) %>%
+  group_by(Przedzial, Sort_Val) %>%
+  summarise(
+    Liczba = n(),
+    Skutecznosc = mean(Scored),
+    .groups = "drop"
+  ) %>%
+  arrange(Sort_Val)
+
+# 2. Wykres, ogarnąc kiedyś żeby były te y zboku bo znika
+ggplot(wiek_stats, aes(x = reorder(Przedzial, Sort_Val), y = Skutecznosc)) +
+  geom_col(fill = "#2c3e50", width = 0.6) +
+  geom_text(aes(label = scales::percent(Skutecznosc, accuracy = 0.1)), 
+            vjust = -0.5, fontface = "bold") +
+  scale_y_continuous(labels = scales::percent_format(), limits = c(0, 1.1)) +
+  labs(
+    title = "Wiek a skuteczność",
+    subtitle = "Podział na 4 grupy wiekowe",
+    x = "Przedział wiekowy",
+    y = "Skuteczność"
+  ) +
+  theme_fivethirtyeight() +
+  theme(axis.title = element_text())
+
+```
+
+### B. Analiza punktowa (Trend)
+
+```{r}
+
+
+# 1. FILTROWANIE , nw czy 10 bedzie g
+stats_wiek_filtered <- dane_clean %>%
+  filter(!is.na(Taker_Age), !is.na(Scored)) %>%
+  group_by(Taker_Age) %>%
+  summarise(
+    Liczba = n(),
+    Skutecznosc = mean(Scored)
+  ) %>%
+  filter(Liczba >= 10) 
+
+# 2. Wykres punktowy z linią trendu
+ggplot(stats_wiek_filtered, aes(x = Taker_Age, y = Skutecznosc)) +
+  # Linia trendu
+  geom_smooth(method = "loess", se = FALSE, color = "red", linewidth = 1.2, alpha = 0.5) +
+  
+  geom_point(aes(size = Liczba), color = "#2c3e50", alpha = 0.8) +
+  geom_text(aes(label = scales::percent(Skutecznosc, accuracy = 1)), 
+            vjust = -1.2, size = 3.5, fontface = "bold") +
+  scale_y_continuous(labels = scales::percent_format(), limits = c(0.5, 1.05)) +
+  scale_x_continuous(breaks = seq(min(stats_wiek_filtered$Taker_Age), 
+                                  max(stats_wiek_filtered$Taker_Age), 1)) +
+  labs(
+    title = "Rzeczywisty wpływ wieku na skuteczność",
+    subtitle = "Tylko roczniki z min. 10 próbami ",
+    x = "Wiek zawodnika",
+    y = "Skuteczność",
+    size = "Liczba prób"
+  ) +
+  theme_fivethirtyeight() +
+  theme(
+    axis.title = element_text())
+
+```
+
+ **Wniosek:** Skuteczność rzutów karnych rośnie wraz z wiekiem zawodnika, co pokozauje że starsi strzelcy mają wieksze szanse na sukces ze względu na doświadczenie.
+
+# Hipoteza 2: Wzrost bramkarza
+
+ **Hipoteza:** Wyżsi bramkarze, dzięki większemu zasięgowi ramion, mają wyższy procent obronionych rzutów karnych.
+
+Grupy Wzrostowe (Tercyle)
+
+Dzielimy populację bramkarzy na 3 równe liczebnie grupy (Niscy / Średni / Wysocy).
+
+```{r}
+
+
+# 1. Tworzenie 3 grup (tercyle)
+gk_tercyle <- dane_clean %>%
+  filter(!is.na(GK_Height), !is.na(Scored)) %>%
+  
+  mutate(Grupa = ntile(GK_Height, 3)) %>% 
+  group_by(Grupa) %>%
+  mutate(
+   
+    Przedzial = paste0(min(GK_Height), "-", max(GK_Height), " cm"),
+    Sort_Val = min(GK_Height),
+    Nazwa_Grupy = case_when(
+      Grupa == 1 ~ "Grupa 1 (Niżsi)",
+      Grupa == 2 ~ "Grupa 2 (Średni)",
+      Grupa == 3 ~ "Grupa 3 (Wyżsi)"
+    )
+  ) %>%
+  group_by(Nazwa_Grupy, Przedzial, Sort_Val) %>%
+  summarise(
+    Liczba = n(),
+    # Sukces GK to BRAK gola (1 - Scored)
+    Procent_Obron = 1 - mean(Scored),
+    .groups = "drop"
+  ) %>%
+  arrange(Sort_Val)
+
+# 2. Wykres
+ggplot(gk_tercyle, aes(x = reorder(Nazwa_Grupy, Sort_Val), y = Procent_Obron)) +
+  geom_col(fill = "purple", width = 0.6) +
+  
+  
+  geom_text(aes(label = scales::percent(Procent_Obron, accuracy = 0.1)), 
+            vjust = -0.5, fontface = "bold") + #prcoenty
+  
+  
+  geom_text(aes(label = Przedzial), 
+            vjust = 1.5, color = "white", size = 3.5, fontface = "bold") + #podpisy
+
+  scale_y_continuous(labels = scales::percent_format(), limits = c(0, 0.45)) +
+  labs(
+    title = "Wzrost a skuteczność interwencji",
+    subtitle = "Podział na 3 grupy (Tercyle)",
+    x = "",
+    y = "% Obronionych Karnych"
+  ) +
+  theme_fivethirtyeight() +
+  theme(axis.title = element_text())
+
+```
+
+
+
+```{r}
+#| include: false
+#bo to sredbue jest imo nic nie wnosi
+
+gk_liga <- dane_clean %>%
+  filter(!is.na(GK_Height), !is.na(Competition)) %>%
+  
+  mutate(Typ_Fizyczny = if_else(GK_Height >= 188, "Wyższy (188+)", "Niższy (<188)")) %>%
+  group_by(Competition, Typ_Fizyczny) %>%
+  summarise(
+    Liczba = n(),
+    Procent_Obron = 1 - mean(Scored),
+    .groups = "drop"
+  )
+
+ggplot(gk_liga, aes(x = Competition, y = Procent_Obron, fill = Typ_Fizyczny)) +
+  geom_col(position = "dodge", width = 0.7) +
+  
+  
+  geom_text(aes(label = scales::percent(Procent_Obron, accuracy = 1)), 
+            position = position_dodge(width = 0.7), vjust = -0.5, size = 3, fontface = "bold") +
+  
+  geom_text(aes(label = paste0("n=", Liczba)), 
+            position = position_dodge(width = 0.7), vjust = 1.5, size = 2.5, color = "white", fontface = "bold") +
+  
+  scale_fill_manual(values = c("#2c3e50", "purple")) + 
+  scale_y_continuous(labels = scales::percent_format(), limits = c(0, 0.6)) +
+  labs(
+    title = "Wzrost a Liga (Weryfikacja próby)",
+    subtitle = "",
+    x = "",
+    y = "% Obron",
+    fill = "Wzrost"
+  ) +
+  theme_fivethirtyeight() +
+  theme(legend.position = "top")
+
+```
+
+
+**Wniosek:** Wyższy wzrost u bramkarzy jest premiowany. Oznacza to że wyżsi bramkarze mają wyższy wskaźnik skutecznych interwencji rzutu karnego.
+
+# Hipoteza 3: Presja meczowa ("Game Changing")
+
+ **Hipoteza:** Czynniki stresogenne (wynik, stadion, rola w zespole) negatywnie wpływają na skuteczność strzelca.
+
+```{r}
+
+
+dane_presja <- dane_clean %>%
+  filter(!is.na(Scored), !is.na(`Home team`), !is.na(`Team taking pen`)) %>%
+  mutate(
+    Typ_Presji = case_when(
+      `LtD game-changing pen` == 1 | `DtW game-changing pen` == 1 ~ "Decydujący moment (Presja)",
+      TRUE ~ "Standardowy karny (Luz)"
+    ),
+    Miejsce = case_when(
+      trimws(`Team taking pen`) == trimws(`Home team`) ~ "Dom",
+      trimws(`Team taking pen`) %in% c("Home", "home", "H") ~ "Dom",
+      TRUE ~ "Wyjazd"
+    ),
+    Status_Strzelca = if_else(`PT sub` == 1, "Rezerwowy (Z ławki)", "Podstawowy skład")
+  )
+
+```
+
+### A. Presja Ogółem
+
+Porównanie ogólne: Karne decydujące vs Zwykłe.
+
+```{r}
+
+
+presja_stats <- dane_presja %>%
+  group_by(Typ_Presji) %>%
+  summarise(
+    Liczba = n(),
+    Skutecznosc = mean(Scored)
+  )
+
+ggplot(presja_stats, aes(x = Typ_Presji, y = Skutecznosc, fill = Typ_Presji)) +
+  geom_col(width = 0.5, show.legend = FALSE) +
+  geom_text(aes(label = scales::percent(Skutecznosc, accuracy = 0.1)), 
+            vjust = -0.5, fontface = "bold", size = 5) +
+  geom_text(aes(label = paste0("n=", Liczba)), 
+            vjust = 1.5, color = "white", fontface = "bold") +
+  scale_fill_manual(values = c("darkred", "#2c3e50")) + 
+  scale_y_continuous(labels = scales::percent_format(), limits = c(0, 1.1)) +
+  labs(
+    title = "Czy waga meczu wpływa na celność?",
+    subtitle = "Skuteczność: Decydujący moment vs Standard",
+    x = "",
+    y = "Skuteczność"
+  ) +
+  theme_fivethirtyeight() +
+  theme(axis.title = element_text())
+
+```
+
+### B. Presja a Stadion (Dom vs Wyjazd)
+
+Sprawdzamy wpływ miejsca rozgrywania meczu.
+
+```{r}
+
+
+stadion_stats <- dane_presja %>%
+  group_by(Miejsce, Typ_Presji) %>%
+  summarise(
+    Liczba = n(),
+    Skutecznosc = mean(Scored),
+    .groups = "drop"
+  )
+
+ggplot(stadion_stats, aes(x = Miejsce, y = Skutecznosc, fill = Typ_Presji)) +
+  geom_col(position = "dodge", width = 0.7) +
+  geom_text(aes(label = scales::percent(Skutecznosc, accuracy = 0.1)), 
+            position = position_dodge(width = 0.7), 
+            vjust = -0.5, size = 4, fontface = "bold") +
+  geom_text(aes(label = paste0("n=", Liczba)), 
+            position = position_dodge(width = 0.7), 
+            vjust = 1.5, size = 3, color = "white", fontface = "bold") +
+  scale_fill_manual(values = c("darkred", "#2c3e50")) + 
+  scale_y_continuous(labels = scales::percent_format(), limits = c(0, 1.15)) +
+  labs(
+    title = "Dom vs Wyjazd a Presja",
+    x = "",
+    y = "Skuteczność",
+    fill = "Sytuacja"
+  ) +
+  theme_fivethirtyeight() +
+  theme(
+    legend.position = "top",
+    axis.title = element_text()
+  )
+
+```
+
+### C. Rezerwowi (Zimne wejście)
+
+Czy rezerwowi piłarze radzą sobie gorzej w decydujących momentach?
+
+```{r}
+
+
+presja_rezerwowi <- dane_presja %>%
+  filter(!is.na(Typ_Presji), !is.na(Status_Strzelca)) %>%
+  group_by(Status_Strzelca, Typ_Presji) %>%
+  summarise(
+    Liczba = n(),
+    Skutecznosc = mean(Scored),
+    .groups = "drop"
+  )
+
+ggplot(presja_rezerwowi, aes(x = Status_Strzelca, y = Skutecznosc, fill = Typ_Presji)) +
+  geom_col(position = "dodge", width = 0.7) +
+  
+  geom_text(aes(label = scales::percent(Skutecznosc, accuracy = 0.1)), 
+            position = position_dodge(width = 0.7), vjust = -0.5, size = 3.5, fontface = "bold") +
+  
+  geom_text(aes(label = paste0("n=", Liczba)), 
+            position = position_dodge(width = 0.7), vjust = 1.5, size = 3, color = "white", fontface = "bold") +
+  
+  scale_fill_manual(values = c("darkred", "#2c3e50")) + 
+  scale_y_continuous(labels = scales::percent_format(), limits = c(0, 1.1)) +
+  labs(
+    title = "Efekt 'Zimnego Wejścia'",
+    subtitle = "Rezerwowy vs Podstawowy",
+    x = "",
+    y = "Skuteczność",
+    fill = "Sytuacja"
+  ) +
+  theme_fivethirtyeight() +
+  theme(legend.position = "top")
+
+```
+
+ **Wniosek:** Widoczne jest że jeśli karny jest na wage wyciągnięcia remisu lub wygrania meczu strzelcy mają większe szanse sukcesu niż w przypadku gdy karny jest na podwyższenie wyniku w wygranym meczu. Presji ulegają bramkarze gdyż są to karne o utrzymanie przewagi. Na wyjeździe wykonwacy radzą sobie gorzej, na co wpływa presja obcego stadionu. Przy rezerwowych a podstawowyh zawodnikach różnicy nie widać.
+
+# Hipoteza 4: Noga strzelca
+
+ **Hipoteza:** Lewonożni piłkarze mogą być trudniejsi do "rozczytania" przez bramkarza.
+
+```{r}
+
+
+
+noga_stats <- dane_clean %>%
+  filter(Taker_Foot %in% c("Right", "Left"), !is.na(Scored)) %>%
+  mutate(Noga = ifelse(Taker_Foot == "Left", "Lewa noga", "Prawa noga")) %>%
+  group_by(Noga) %>%
+  summarise(
+    Liczba = n(),
+    Skutecznosc = mean(as.numeric(Scored)),
+    .groups = "drop"
+  )
+
+# Wykres
+ggplot(noga_stats, aes(x = Noga, y = Skutecznosc, fill = Noga)) +
+  geom_col(width = 0.5, show.legend = FALSE) +
+  
+  
+  geom_text(aes(label = scales::percent(Skutecznosc, accuracy = 0.1)), 
+            vjust = -0.5, size = 5, fontface = "bold") +
+  
+ 
+  geom_text(aes(label = paste0("n=", Liczba)), 
+            vjust = 1.5, size = 4, color = "white", fontface = "bold") +
+  
+ 
+  scale_fill_manual(values = c("darkgreen", "blue")) + 
+  scale_y_continuous(labels = scales::percent_format(), limits = c(0, 1.1)) +
+  
+  labs(
+    title = "Dominująca noga a skuteczność",
+    subtitle = "Porównanie rzutów karnych: Prawa vs Lewa",
+    x = "",
+    y = "Skuteczność"
+  ) +
+  theme_fivethirtyeight() +
+  theme(axis.title = element_text())
+
+```
+
+ **Wniosek:** Lewonożni piłkarze mają większe szanse na sukces podczas karnego, ze wzgledu na efekt zaskoczenia. Większość bramkarzy spodziewa się strzału z prawej nogi, z prostego powodu - większość piłkarzy jest prawonożnych.
+
+# Profil Optymalnego Wykonawcy
+
+ **Analiza Wielowymiarowa:** Szukamy idealnej kombinacji trzech cech: Nogi, Wieku i Wzrostu. Wykres przedstawia rzeczywiste zakresy liczbowe. Grupy o zbyt małej liczebności (n \< 10) zostały odfiltrowane.
+
+```{r}
+
+
+
+profil_ranges <- dane_clean %>%
+  
+  filter(!is.na(Taker_Age), !is.na(Taker_Height), !is.na(Scored)) %>%
+  filter(Taker_Foot %in% c("Right", "Left")) %>%
+  mutate(
+    Noga = ifelse(Taker_Foot == "Left", "LEWA NOGA", "PRAWA NOGA"),
+    
+
+    Idx_Wiek = ntile(Taker_Age, 3),
+    Idx_Wzrost = ntile(Taker_Height, 3)
+  ) %>%
+  
+  group_by(Idx_Wiek) %>%
+  mutate(Label_Wiek = paste0(min(Taker_Age), "-", max(Taker_Age))) %>%
+  ungroup() %>%
+  
+  group_by(Idx_Wzrost) %>%
+  mutate(Label_Wzrost = paste0(min(Taker_Height), "-", max(Taker_Height))) %>%
+  ungroup() %>%
+  
+
+  group_by(Noga, Label_Wiek, Idx_Wiek, Label_Wzrost, Idx_Wzrost) %>%
+  summarise(
+    Liczba = n(),
+    Skutecznosc = mean(as.numeric(Scored)),
+    .groups = "drop"
+  ) %>%
+  
+  filter(Liczba >= 10)
+#dla 20 nic nie widac, dla 5 wydaje sie mala proba, nie ma co syfu dawac
+#wykres
+ggplot(profil_ranges, aes(x = reorder(Label_Wiek, Idx_Wiek), 
+                          y = reorder(Label_Wzrost, Idx_Wzrost), 
+                          fill = Skutecznosc)) +
+  geom_tile(color = "white", size = 1) +
+  
+  facet_wrap(~Noga) +
+  
+  
+  geom_text(aes(label = paste0(scales::percent(Skutecznosc, accuracy = 0.1), "\n(n=", Liczba, ")")), 
+            color = "white", fontface = "bold", size = 3.5) +
+  scale_fill_gradient(low = "#7f8c8d", high = "#27ae60", labels = scales::percent) +
+  
+  labs(
+    title = "Optymalny profil",
+    subtitle = "Kombinacja: Wiek + Wzrost",
+    x = "Wiek zawodnika (lata)",
+    y = "Wzrost zawodnika (cm)",
+    fill = "Skuteczność"
+  ) +
+  theme_fivethirtyeight() +
+  theme(
+    axis.title = element_text(),
+    strip.text = element_text(face = "bold", size = 12)
+  )
+
+
+```
+
+# Hipoteza 5: Czas gry a zmęczenie
+
+**Hipoteza:** Wraz z upływem czasu narasta zmęczenie fizyczne i presja psychiczna, co może negatywnie wpływać na precyzję wykonawcy.
+
+```{r}
+
+
+# PRZYGOTOWANIE DANYCH
+dane_czas <- dane_clean %>%
+  filter(!is.na(Minute), !is.na(Scored)) %>%
+  mutate(Minuta_Num = as.numeric(Minute)) %>% 
+  
+  filter(!is.na(Minuta_Num)) %>%
+  # Dzielimy mecz na 4 części (Ćwiartki)
+  mutate(
+    Cwiartka = case_when(
+      Minuta_Num <= 22 ~ "1. Początek (0-22')",
+      Minuta_Num <= 45 ~ "2. Przed przerwą (23-45')",
+      Minuta_Num <= 67 ~ "3. Po przerwie (46-67')",
+      TRUE ~ "4. Końcówka (68'+)"
+    )
+  )
+
+```
+
+### A. Trend Czasowy (Minuta po minucie)
+
+```{r}
+
+
+czas_line <- dane_czas %>%
+  group_by(Minuta_Num) %>%
+  summarise(
+    Liczba = n(),
+    Skutecznosc = mean(as.numeric(Scored))
+  ) %>%
+
+  filter(Liczba >= 5) #10 ZA duzo moze z 67
+
+ggplot(czas_line, aes(x = Minuta_Num, y = Skutecznosc)) +
+  
+  geom_smooth(method = "loess", se = TRUE, color = "red",  alpha = 0.2) +
+  
+  geom_point(alpha = 0.4, size = 2) +
+  
+  scale_y_continuous(labels = scales::percent_format()) +
+  scale_x_continuous(breaks = seq(0, 90, 5)) + 
+  
+  labs(
+    title = "Czy skuteczność spada z czasem?",
+    subtitle = "Trend skuteczności w zależności od minuty meczu",
+    x = "Minuta meczu",
+    y = "Skuteczność"
+  ) +
+  theme_fivethirtyeight() +
+  theme(axis.title = element_text())
+
+```
+
+### B. Mecz w 4 Częściach
+
+```{r}
+
+
+czas_bar <- dane_czas %>%
+  group_by(Cwiartka) %>%
+  summarise(
+    Liczba = n(),
+    Skutecznosc = mean(as.numeric(Scored))
+  )
+
+ggplot(czas_bar, aes(x = Cwiartka, y = Skutecznosc, fill = Cwiartka)) +
+  geom_col(width = 0.6, show.legend = FALSE) +
+  
+  
+  geom_text(aes(label = scales::percent(Skutecznosc, accuracy = 0.1)), 
+            vjust = -0.5, fontface = "bold", size = 4.5) +
+  
+  
+  geom_text(aes(label = paste0("n=", Liczba)), 
+            vjust = 1.5, color = "black", fontface = "bold", size = 3.5) +
+  
+   scale_fill_brewer(palette = "Blues") + 
+  scale_y_continuous(labels = scales::percent_format(), limits = c(0, 1.1)) +
+  
+  labs(
+    title = "Cztery fazy meczu",
+    subtitle = "Skuteczność rzutów karnych w podziale na ćwiartki",
+    x = "",
+    y = "Skuteczność"
+  ) +
+  theme_fivethirtyeight() +
+  theme(axis.title = element_text())
+
+```
+
+ **Wniosek:** Wraz z upływem meczu skuteczność wykonawców zmniejsza sie z powodu zmęczenia, po przerwie widoczny jest skok skutecznośći z powodu odpoczynku.
+
+# Ranking Czynników (Tabela Wpływu)
+
+**Podsumowanie:** Ostateczne zestawienie wszystkich 9 czynników. Tabela pokazuje "Siłę wpływu", czyli różnicę skuteczności (w punktach procentowych) między najlepszą a najgorszą sytuacją dla danego czynnika.
+
+```{r}
+
+
+dane_calc <- dane_clean %>% 
+  filter(!is.na(Scored)) %>% 
+  mutate(S = as.numeric(Scored))
+
+diff_presja <- dane_presja %>%
+  group_by(Typ_Presji) %>% 
+  summarise(S = mean(as.numeric(Scored))) %>%
+  summarise(Roznica = max(S) - min(S)) %>%
+  mutate(Czynnik = "Presja Wyniku (Decydujący vs Luz)")
+
+diff_miejsce <- dane_presja %>%
+  group_by(Miejsce) %>% 
+  summarise(S = mean(as.numeric(Scored))) %>%
+  summarise(Roznica = max(S) - min(S)) %>%
+  mutate(Czynnik = "Stadion (Dom vs Wyjazd)")
+
+diff_sub <- dane_presja %>%
+  group_by(Status_Strzelca) %>% 
+  summarise(S = mean(as.numeric(Scored))) %>%
+  summarise(Roznica = max(S) - min(S)) %>%
+  mutate(Czynnik = "Status (Rezerwowy vs Podstawowy)")
+
+diff_minuta <- dane_czas %>%
+  group_by(Cwiartka) %>% 
+  summarise(S = mean(as.numeric(Scored))) %>%
+  summarise(Roznica = max(S) - min(S)) %>%
+  mutate(Czynnik = "Czas gry (Zmęczenie - Ćwiartki)")
+
+diff_noga <- noga_stats %>%
+  summarise(Roznica = max(Skutecznosc) - min(Skutecznosc)) %>%
+  mutate(Czynnik = "Dominująca stopa (Lewa vs Prawa)")
+
+diff_gk <- gk_tercyle %>%
+  summarise(Roznica = max(Procent_Obron) - min(Procent_Obron)) %>%
+  mutate(Czynnik = "Warunki fizyczne Bramkarza (Niscy vs Wysocy)")
+
+diff_taker <- dane_calc %>%
+  filter(!is.na(Taker_Height)) %>%
+  mutate(Grupa = ntile(Taker_Height, 3)) %>%
+  group_by(Grupa) %>% summarise(S = mean(S)) %>%
+  summarise(Roznica = max(S) - min(S)) %>%
+  mutate(Czynnik = "Warunki fizyczne Strzelca (Niscy vs Wysocy)")
+
+diff_wiek <- dane_calc %>%
+  filter(!is.na(Taker_Age)) %>%
+  mutate(Grupa = ntile(Taker_Age, 4)) %>% 
+  filter(Grupa %in% c(1, 4)) %>%
+  group_by(Grupa) %>% summarise(S = mean(S)) %>%
+  summarise(Roznica = max(S) - min(S)) %>%
+  mutate(Czynnik = "Doświadczenie Strzelca (Wiek)")
+#to i gk wrzuce bo to samo to bedzie
+diff_gk_age <- dane_calc %>%
+  filter(!is.na(GK_Age)) %>%
+  mutate(Grupa = ntile(GK_Age, 4)) %>% 
+  filter(Grupa %in% c(1, 4)) %>%
+  group_by(Grupa) %>% summarise(S = mean(S)) %>%
+  summarise(Roznica = max(S) - min(S)) %>%
+  mutate(Czynnik = "Doświadczenie Bramkarza (Wiek)") 
+
+#tabelka
+
+bind_rows(diff_presja, diff_miejsce, diff_wiek, diff_noga, diff_gk, 
+          diff_taker, diff_sub, diff_minuta, diff_gk_age) %>%
+  arrange(desc(Roznica)) %>%
+  mutate(Sila_Wplywu = scales::percent(Roznica, accuracy = 0.1)) %>%
+  select(Czynnik, Sila_Wplywu) %>%
+  kable(
+    col.names = c("Analizowany Czynnik", "Siła Wpływu (Różnica p.p.)"),
+    align = c("l", "c"),
+    
+  ) %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+
+```
